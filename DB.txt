@@ -1,0 +1,312 @@
+-- Owner Table
+CREATE TABLE Owner (
+    OwnerID INT PRIMARY KEY AUTO_INCREMENT,
+    First_Name VARCHAR(50) NOT NULL,
+    Middle_Name VARCHAR(50),
+    Last_Name VARCHAR(50) NOT NULL
+);
+
+-- Caretaker Table
+CREATE TABLE Caretaker (
+    CaretakerID INT PRIMARY KEY AUTO_INCREMENT,
+    OwnerID INT NOT NULL,
+    First_Name VARCHAR(50) NOT NULL,
+    Middle_Name VARCHAR(50),
+    Last_Name VARCHAR(50) NOT NULL,
+    Contact VARCHAR(20) NOT NULL,
+    FOREIGN KEY (OwnerID) REFERENCES Owner(OwnerID) ON DELETE CASCADE
+);
+
+-- Employee Table (to manage in case the caretaker is not around)
+CREATE TABLE Employee (
+    EmployeeID INT PRIMARY KEY AUTO_INCREMENT,
+    First_Name VARCHAR(50) NOT NULL,
+    Middle_Name VARCHAR(50),
+    Last_Name VARCHAR(50) NOT NULL,
+    Contact VARCHAR(20) NOT NULL,
+    Role VARCHAR(50) NOT NULL  -- Role could be 'Caretaker Assistant', 'Maintenance Staff', etc.
+);
+
+-- Room Table (Added Floor column)
+CREATE TABLE Room (
+    Room_ID VARCHAR(10) PRIMARY KEY,
+    Rent_Amount DECIMAL(10,2) NOT NULL,
+    Status VARCHAR(20) NOT NULL,  -- 'Available', 'Occupied', 'Maintenance'
+    Floor VARCHAR(10) NOT NULL    -- Specifies the floor (e.g., '1st Floor', '2nd Floor', '3rd Floor')
+);
+
+-- Bookings Table (Optional EmployeeID when CaretakerID is not available)
+CREATE TABLE Bookings (
+    Booking_ID INT PRIMARY KEY AUTO_INCREMENT,
+    First_Name VARCHAR(50) NOT NULL,
+    Middle_Name VARCHAR(50),
+    Last_Name VARCHAR(50) NOT NULL,
+    Contact VARCHAR(20) NOT NULL,
+    Email VARCHAR(100) NOT NULL,
+    CaretakerID INT,  -- Caretaker may handle booking
+    EmployeeID INT,   -- Employee may handle booking if the caretaker is not available
+    Booking_Date DATE NOT NULL,
+    Status VARCHAR(20) NOT NULL,  -- 'Pending', 'Confirmed', 'Cancelled'
+    Room_ID VARCHAR(10) NOT NULL,
+    FOREIGN KEY (CaretakerID) REFERENCES Caretaker(CaretakerID) ON DELETE SET NULL,
+    FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID) ON DELETE SET NULL,
+    FOREIGN KEY (Room_ID) REFERENCES Room(Room_ID)
+);
+
+-- Boarder Table (Optional EmployeeID when CaretakerID is not available)
+CREATE TABLE Boarder (
+    Boarder_ID INT PRIMARY KEY AUTO_INCREMENT,
+    First_Name VARCHAR(50) NOT NULL,
+    Middle_Name VARCHAR(50),
+    Last_Name VARCHAR(50) NOT NULL,
+    Contact VARCHAR(20) NOT NULL,
+    Email VARCHAR(100) UNIQUE NOT NULL,
+    Room_ID VARCHAR(10),  -- Which room they are occupying
+    CaretakerID INT,  -- Managed by the caretaker or employee
+    EmployeeID INT,
+    FOREIGN KEY (CaretakerID) REFERENCES Caretaker(CaretakerID) ON DELETE SET NULL,
+    FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID) ON DELETE SET NULL,
+    FOREIGN KEY (Room_ID) REFERENCES Room(Room_ID)
+);
+
+-- Guardian Table (For emergency contact information)
+CREATE TABLE Guardian (
+    Guardian_ID INT PRIMARY KEY AUTO_INCREMENT,
+    Boarder_ID INT NOT NULL,
+    First_Name VARCHAR(50) NOT NULL,
+    Middle_Name VARCHAR(50),
+    Last_Name VARCHAR(50) NOT NULL,
+    Contact VARCHAR(20) NOT NULL,
+    Relationship VARCHAR(50) NOT NULL,
+    FOREIGN KEY (Boarder_ID) REFERENCES Boarder(Boarder_ID) ON DELETE CASCADE
+);
+
+-- Deposit Balance Table
+CREATE TABLE Deposit_Balance (
+    DepositBalance_ID INT PRIMARY KEY AUTO_INCREMENT,
+    Boarder_ID INT NOT NULL UNIQUE,
+    Balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    FOREIGN KEY (Boarder_ID) REFERENCES Boarder(Boarder_ID) ON DELETE CASCADE
+);
+
+-- Payment Table
+CREATE TABLE Payment (
+    Payment_ID INT PRIMARY KEY AUTO_INCREMENT,
+    Boarder_ID INT NOT NULL,
+    Payment_Amount DECIMAL(10,2) NOT NULL,
+    Method VARCHAR(50) NOT NULL,  -- 'Cash', 'Credit Card', 'Online Transfer'
+    Payment_Type VARCHAR(20) NOT NULL,  -- 'Full', 'Partial'
+    Payment_Date DATE NOT NULL,
+    FOREIGN KEY (Boarder_ID) REFERENCES Boarder(Boarder_ID)
+);
+
+-- Charges Table
+CREATE TABLE Charges (
+    Charge_ID INT PRIMARY KEY AUTO_INCREMENT,
+    Boarder_ID INT NOT NULL,
+    Description TEXT NOT NULL,
+    Charge_Type VARCHAR(20) NOT NULL,  -- 'One-time', 'Recurring'
+    Charge_Amount DECIMAL(10,2) NOT NULL,
+    Charge_Date DATE NOT NULL,
+    FOREIGN KEY (Boarder_ID) REFERENCES Boarder(Boarder_ID)
+);
+
+-- Triggers
+DELIMITER $$
+
+-- Increase Deposit Balance on Payment
+CREATE TRIGGER Increase_Deposit_Balance
+AFTER INSERT ON Payment
+FOR EACH ROW
+BEGIN
+    UPDATE Deposit_Balance
+    SET Balance = Balance + NEW.Payment_Amount
+    WHERE Boarder_ID = NEW.Boarder_ID;
+END $$
+
+-- Deduct Deposit Balance on Charge (Prevents Negative Balance)
+CREATE TRIGGER Deduct_Deposit_Balance
+AFTER INSERT ON Charges
+FOR EACH ROW
+BEGIN
+    IF (SELECT Balance FROM Deposit_Balance WHERE Boarder_ID = NEW.Boarder_ID) >= NEW.Charge_Amount THEN
+        UPDATE Deposit_Balance
+        SET Balance = Balance - NEW.Charge_Amount
+        WHERE Boarder_ID = NEW.Boarder_ID;
+    ELSE
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Insufficient deposit balance';
+    END IF;
+END $$
+
+DELIMITER ;
+
+DELIMITER //
+
+CREATE TRIGGER update_room_status_on_boarder_insert
+AFTER INSERT ON Boarder
+FOR EACH ROW
+BEGIN
+    -- If a new boarder is assigned to a room, mark it as "Occupied"
+    IF NEW.Room_ID IS NOT NULL THEN
+        UPDATE Room
+        SET Status = 'Occupied'
+        WHERE Room_ID = NEW.Room_ID;
+    END IF;
+END;
+//
+
+DELIMITER ;
+
+DELIMITER //
+
+CREATE TRIGGER update_room_status_on_boarder_update
+AFTER UPDATE ON Boarder
+FOR EACH ROW
+BEGIN
+    -- If the boarder moves into a new room, mark it as "Occupied"
+    IF NEW.Room_ID IS NOT NULL THEN
+        UPDATE Room
+        SET Status = 'Occupied'
+        WHERE Room_ID = NEW.Room_ID;
+    END IF;
+
+    -- If the boarder moves out of a room, mark it as "Available" (only if the room is NOT in maintenance)
+    IF OLD.Room_ID IS NOT NULL AND NEW.Room_ID IS NULL THEN
+        UPDATE Room
+        SET Status = 'Available'
+        WHERE Room_ID = OLD.Room_ID AND Status <> 'Maintenance';
+    END IF;
+END;
+//
+
+DELIMITER ;
+
+DELIMITER //
+
+CREATE TRIGGER update_room_status_on_boarder_delete
+AFTER DELETE ON Boarder
+FOR EACH ROW
+BEGIN
+    -- When a boarder is deleted, mark the room as "Available" (only if the room is NOT in maintenance)
+    IF OLD.Room_ID IS NOT NULL THEN
+        UPDATE Room
+        SET Status = 'Available'
+        WHERE Room_ID = OLD.Room_ID AND Status <> 'Maintenance';
+    END IF;
+END;
+//
+
+DELIMITER ;
+
+
+-- Views
+CREATE VIEW Boarder_Info AS
+SELECT 
+    B.Boarder_ID, B.First_Name, B.Middle_Name, B.Last_Name, B.Contact, B.Email,
+    B.Room_ID, R.Rent_Amount, R.Status, R.Floor  -- Including floor details
+FROM Boarder B
+JOIN Room R ON B.Room_ID = R.Room_ID;
+
+CREATE VIEW Deposit_Details AS
+SELECT 
+    DB.DepositBalance_ID, DB.Balance, 
+    B.First_Name, B.Middle_Name, B.Last_Name,  -- Adding boarder name columns
+    P.Payment_ID, P.Payment_Amount, P.Method, P.Payment_Type, P.Payment_Date,
+    C.Charge_ID, C.Description, C.Charge_Type, C.Charge_Amount, C.Charge_Date
+FROM Deposit_Balance DB
+LEFT JOIN Boarder B ON DB.Boarder_ID = B.Boarder_ID  -- Joining with Boarder to get the name
+LEFT JOIN Payment P ON DB.Boarder_ID = P.Boarder_ID
+LEFT JOIN Charges C ON DB.Boarder_ID = C.Boarder_ID;
+
+-- Stored Procedure for Calculating Total Income
+DELIMITER $$
+CREATE PROCEDURE Get_Total_Income_By_Date(IN start_date DATE, IN end_date DATE)
+BEGIN
+    DECLARE total_payments DECIMAL(10,2);
+    DECLARE total_charges DECIMAL(10,2);
+    DECLARE total_income DECIMAL(10,2);
+
+    SELECT IFNULL(SUM(Payment_Amount), 0) INTO total_payments 
+    FROM Payment 
+    WHERE Payment_Date BETWEEN start_date AND end_date;
+
+    SELECT IFNULL(SUM(Charge_Amount), 0) INTO total_charges 
+    FROM Charges 
+    WHERE Charge_Date BETWEEN start_date AND end_date;
+
+    SET total_income = total_payments - total_charges;
+
+    SELECT total_payments AS Total_Payments, 
+           total_charges AS Total_Charges, 
+           total_income AS Net_Income;
+END $$
+
+DELIMITER ;
+
+DELIMITER //
+
+CREATE PROCEDURE add_to_deposit(IN boarderID INT, IN amount DECIMAL(10,2))
+BEGIN
+    -- Check if the boarder already has a deposit balance record
+    IF EXISTS (SELECT 1 FROM Deposit_Balance WHERE Boarder_ID = boarderID) THEN
+        -- Update the existing deposit balance
+        UPDATE Deposit_Balance
+        SET Balance = Balance + amount
+        WHERE Boarder_ID = boarderID;
+    ELSE
+        -- Insert a new record for the boarder with the initial deposit amount
+        INSERT INTO Deposit_Balance (Boarder_ID, Balance)
+        VALUES (boarderID, amount);
+    END IF;
+END;
+//
+
+DELIMITER ;
+
+DELIMITER //
+
+CREATE TRIGGER after_payment_add_to_deposit
+AFTER INSERT ON Payment
+FOR EACH ROW
+BEGIN
+    -- Call the stored procedure to add payment amount to deposit balance
+    CALL add_to_deposit(NEW.Boarder_ID, NEW.Payment_Amount);
+END;
+//
+
+DELIMITER ;
+
+DELIMITER //
+
+CREATE PROCEDURE delete_boarder_and_related_data(IN boarderID INT)
+BEGIN
+    -- Delete Guardian records related to the boarder
+    DELETE FROM Guardian WHERE Boarder_ID = boarderID;
+
+    -- Delete Payment records related to the boarder
+    DELETE FROM Payment WHERE Boarder_ID = boarderID;
+
+    -- Delete Charges records related to the boarder
+    DELETE FROM Charges WHERE Boarder_ID = boarderID;
+
+    -- Delete Deposit Balance records related to the boarder
+    DELETE FROM Deposit_Balance WHERE Boarder_ID = boarderID;
+
+    -- Delete Bookings related to the boarder
+    DELETE FROM Bookings WHERE First_Name IN (SELECT First_Name FROM Boarder WHERE Boarder_ID = boarderID)
+                        AND Last_Name IN (SELECT Last_Name FROM Boarder WHERE Boarder_ID = boarderID)
+                        AND Contact IN (SELECT Contact FROM Boarder WHERE Boarder_ID = boarderID);
+
+    -- Delete the Boarder record itself
+    DELETE FROM Boarder WHERE Boarder_ID = boarderID;
+END;
+//
+
+DELIMITER ;
+
+
+
+
+
+
